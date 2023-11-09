@@ -1,0 +1,356 @@
+---
+title: "text_book_ch2"
+author: "Michael Robinson"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction:
+
+In this lab I will use the code from the reading, to examine Text mining, using three lexicons (bing, nrc, and afinn), I will then use an additional lexicon (loughran) to perform further analysis. I will then create a second R chunk using a different corpus and all four lexicons.
+
+# References
+
+R for Data Science by Hadley Wickham & Garrett Grolemund (2017). Package `tidytext`. Retrieved from <https://www.tidytextmining.com/>
+
+Silge, Julia, PhD. & Robinson, David, PhD. (2017). Text Mining with R: A Tidy Approach. O'Reilly Media, Inc.
+
+```{r Jane Austen}
+library(tidytext)
+library(janeaustenr)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(wordcloud)
+library(lexicon)
+library(textdata)
+
+
+
+text_df <- read.csv("/Users/michaelrobinson/Data_607/tweets_data.csv", stringsAsFactors = FALSE, header = TRUE)
+
+get_sentiments("afinn")
+get_sentiments("bing")
+get_sentiments("nrc")
+get_sentiments("loughran")
+
+tidy_books <- austen_books() %>%
+  group_by(book) %>%
+  mutate(
+    linenumber = row_number(),
+    chapter = cumsum(str_detect(text, 
+                                regex("^chapter [\\divxlc]", 
+                                      ignore_case = TRUE)))) %>%
+  ungroup() %>%
+  unnest_tokens(word, text)
+
+nrc_joy <- get_sentiments("nrc") %>% 
+  filter(sentiment == "joy")
+
+tidy_books %>%
+  filter(book == "Emma") %>%
+  inner_join(nrc_joy) %>%
+  count(word, sort = TRUE)
+
+jane_austen_sentiment <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(book, index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+
+ggplot(jane_austen_sentiment, aes(index, sentiment, fill = book)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~book, ncol = 2, scales = "free_x")
+
+pride_prejudice <- tidy_books %>% 
+  filter(book == "Pride & Prejudice")
+
+afinn <- pride_prejudice %>% 
+  inner_join(get_sentiments("afinn")) %>% 
+  group_by(index = linenumber %/% 80) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  mutate(method = "AFINN")
+
+bing_and_nrc <- bind_rows(
+  pride_prejudice %>% 
+    inner_join(get_sentiments("bing")) %>%
+    mutate(method = "Bing et al."),
+  pride_prejudice %>% 
+    inner_join(get_sentiments("nrc") %>% 
+                 filter(sentiment %in% c("positive", 
+                                         "negative"))
+    ) %>%
+    mutate(method = "NRC")) %>%
+  count(method, index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(names_from = sentiment,
+              values_from = n,
+              values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+
+bind_rows(afinn, 
+          bing_and_nrc) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y")
+
+bing_word_counts <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+
+bing_word_counts %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 10) %>% 
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(x = "Contribution to sentiment",
+       y = NULL)
+
+custom_stop_words <- bind_rows(tibble(word = c("miss"),  
+                                      lexicon = c("custom")), 
+                               stop_words)
+
+tidy_books %>%
+  anti_join(stop_words) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+
+library(reshape2)
+
+tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("gray20", "gray80"),
+                   max.words = 100)
+
+p_and_p_sentences <- tibble(text = prideprejudice) %>% 
+  unnest_tokens(sentence, text, token = "sentences")
+p_and_p_sentences$sentence[2]
+
+austen_chapters <- austen_books() %>%
+  group_by(book) %>%
+  unnest_tokens(chapter, text, token = "regex", 
+                pattern = "Chapter|CHAPTER [\\dIVXLC]") %>%
+  ungroup()
+
+austen_chapters %>% 
+  group_by(book) %>% 
+  summarise(chapters = n())
+
+bingnegative <- get_sentiments("bing") %>% 
+  filter(sentiment == "negative")
+
+wordcounts <- tidy_books %>%
+  group_by(book, chapter) %>%
+  summarize(words = n())
+
+tidy_books %>%
+  semi_join(bingnegative) %>%
+  group_by(book, chapter) %>%
+  summarize(negativewords = n()) %>%
+  left_join(wordcounts, by = c("book", "chapter")) %>%
+  mutate(ratio = negativewords/words) %>%
+  filter(chapter != 0) %>%
+  slice_max(ratio, n = 1) %>% 
+  ungroup()
+
+loughran_lexicon <- get_sentiments("loughran")
+
+loughran_sentiment <- tidy_books %>%
+  filter(book == "Sense & Sensibility") %>%  
+  inner_join(loughran_lexicon, by = c(word = "word")) %>% 
+  count(word, sentiment, sort = TRUE)
+
+loughran_summary <- loughran_sentiment %>%
+  group_by(sentiment) %>%
+  summarise(total_count = sum(n)) %>%
+  ungroup()
+
+#create a bar plot 
+ggplot(loughran_summary, aes(x = sentiment, y = total_count, fill = sentiment)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Word Counts by Sentiment in 'Sense & Sensibility'",
+       x = "Sentiment",
+       y = "Total Word Count") +
+  scale_fill_brewer(palette = "Set1") +
+  theme(legend.position = "none") + coord_flip()
+```
+
+## Introduction
+
+In this chunk of the assignment I will use a pdf version on the book A Journey to the center of the earth. I will load the pdf file, then create a corpus and do some text processing. I will then use the lexicons (AFINN,Bing,nrc and loughran) to do analysis on the book and create some visualization.
+
+```{r assignment 10}
+
+library(pdftools)
+library(tm)
+library(tidytext)
+library(dplyr)
+library(ggplot2)
+library(textdata)
+library(RefManageR)
+
+# Reference: 
+
+bib <- BibEntry(
+  bibtype = "Book",
+  title = "A Journey to the center of the Earth",
+  author = "Jules Verne",
+  translator = "Fredrick Amadeus Malleson",
+  year = "1871", 
+  publisher = "Griffith and Farran",
+  address = "England"
+)
+
+#print(bib)
+
+Book <- "A-Journey-to-the-Centre-of-the-Earth.pdf"
+
+# Read the text from the PDF
+journey_cent <- pdf_text(Book)
+
+# Create corpus
+document <- Corpus(VectorSource(journey_cent))
+
+# Text preprocessing
+document <- tm_map(document, content_transformer(tolower))
+document <- tm_map(document, removeNumbers)
+document <- tm_map(document, removeWords, stopwords("english"))
+document <- tm_map(document, removePunctuation, preserve_intra_word_dashes = TRUE)
+document <- tm_map(document, stripWhitespace)
+
+# Create a Document-Term Matrix
+Book_Jorney <- DocumentTermMatrix(document)
+
+# Convert the Document-Term Matrix into a tidy format
+Book_Jorney_tidy <- tidy(Book_Jorney)
+names(Book_Jorney_tidy)[2] <- 'word'       
+
+# Access the lexicons
+get_sentiments("afinn")
+get_sentiments("bing")
+get_sentiments("nrc")
+
+# using the Bing lexicon
+Book_Jorney_bing <- Book_Jorney_tidy %>%
+  inner_join(get_sentiments("bing"), by = c(word = "word"))
+
+# Using the AFINN lexicon
+Book_Jorney_afinn <- Book_Jorney_tidy %>%
+  inner_join(get_sentiments("afinn"), by = c(word = "word"))
+
+# Filtering the joy words from the NRC lexicon
+nrcjoy <- get_sentiments("nrc") %>%
+  filter(sentiment == "joy")
+Book_Jorney_nrcjoy <- Book_Jorney_tidy %>%
+  inner_join(nrcjoy) %>%
+  count(word, sort = TRUE)
+
+# Filtering the fear words from the NRC lexicon 
+nrcfear <- get_sentiments("nrc") %>%
+  filter(sentiment == "fear")
+Book_Jorney_nrcfear <- Book_Jorney_tidy %>%
+  inner_join(nrcfear) %>%
+  count(word, sort = TRUE)
+
+# create a frequency count for the Bing lexicon
+Book_Jorney_bing_count <- Book_Jorney_bing %>%
+  count(word, sentiment, sort = TRUE)
+
+# AFINN lexicon, sum the scores for each word
+Book_Jorney_afinn_sum <- Book_Jorney_afinn %>%
+  group_by(word) %>%
+  summarize(score_sum = sum(value, na.rm = TRUE)) %>%
+  ungroup() %>%
+  arrange(desc(score_sum))
+
+# Calculate the count of each sentiment score
+Book_Jorney_afinn_count <- Book_Jorney_afinn %>%
+  group_by(value) %>%
+  summarize(count = n()) %>%
+  ungroup() %>%
+  arrange(desc(count))
+
+# Calculate the frequency of words that have an AFINN score
+Book_Jorney_afinn_frequency <- Book_Jorney_afinn %>%
+  count(word, sort = TRUE)
+
+# Bar plot for Bing lexicon
+Book_Jorney_bing_count %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 10) %>% 
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(x = "Contribution to sentiment",
+       y = NULL)
+
+# Bar plot for AFINN lexicon
+ggplot(Book_Jorney_afinn_count, aes(x = value, y = count)) +
+  geom_bar(stat = "identity", aes(fill = value > 0)) +  # Color bars by positive or negative sentiment
+  scale_fill_manual(values = c("red", "green"), name = "Sentiment", 
+                    labels = c("Negative", "Positive")) +
+  labs(x = "AFINN Sentiment Score", y = "Count", title = "Counts of AFINN Sentiment Scores") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+Book_Jorney_nrcjoy <- Book_Jorney_nrcjoy %>% 
+  arrange(desc(n))
+
+# Create a wordcloud of nrc joy words
+
+wordcloud(words = Book_Jorney_nrcjoy$word,
+          freq = Book_Jorney_nrcjoy$n,
+          min.freq = 1,
+          max.words = 145,
+          random.order = FALSE,
+          rot.per = 0.35,
+          scale = c(4, 0.5),
+          colors = brewer.pal(8, "Dark2"))
+
+# Create a wordcloud of nrc fear words
+
+Book_Jorney_nrcfear <- Book_Jorney_nrcfear %>% 
+  arrange(desc(n))
+
+wordcloud(words = Book_Jorney_nrcfear$word,
+          freq = Book_Jorney_nrcfear$n,
+          min.freq = 1,
+          max.words = 110,
+          random.order = FALSE,
+          rot.per = 0.35,
+          scale = c(4, 0.5),
+          colors = brewer.pal(8, "Dark2"))
+
+
+loughran_lexicon <- get_sentiments("loughran")
+
+
+Book_Journey_loughran <- Book_Jorney_tidy %>%
+  inner_join(loughran_lexicon, by = c(word = "word"))
+
+# Count the frequency of each sentiment
+Book_Journey_loughran_count <- Book_Journey_loughran %>%
+  count(sentiment, sort = TRUE) %>%
+  mutate(lexicon = "Loughran-McDonald") # Add a column for the lexicon name
+
+
+ggplot(Book_Journey_loughran_count, aes(x = sentiment, y = n, fill = sentiment)) + 
+  geom_bar(stat = "identity") + 
+  labs(x = "Sentiment", y = "count", title = " Counts of Sentiments (Loughran-McDonald Lexicon)") + theme_minimal() + coord_flip()
+
+```
